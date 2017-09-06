@@ -85,6 +85,13 @@ def init(confdict, db, ctx=None):
         conf['index'] = 'score'
     keep_source = parse_bool(conf['keep_source'])
     es_conf = ConfiguredEsModule(db, es, conf['index'], keep_source)
+    _register_flush_listeners(db, es_conf)
+    if ctx and conf['ctx.member'] not in (None, 'None'):
+        ctx.register(conf['ctx.member'], lambda ctx: CtxProxy(es_conf, ctx))
+    return es_conf
+
+
+def _register_flush_listeners(db, es_conf):
     to_insert = []
     to_delete = []
 
@@ -98,25 +105,30 @@ def init(confdict, db, ctx=None):
         logic into the ``after_flush``, since we might miss the optional
         *instances* argument to this function.
         """
+
+        def relevant(obj):
+            """
+            Checks if the given object *obj* is to be handled during this
+            database flush. The criteria are simple:
+
+            - The object must have a matching score.es configuration (i.e. a
+              :term:`top-most es class`) and
+            - it must be in the list of flushed *instances* (if the list is
+              non-empty)
+            """
+            return (es_conf.get_es_class(obj) and
+                    (not instances or obj in instances))
+
         nonlocal to_insert, to_delete
-        to_insert = []
-        to_delete = []
-        for obj in session.new:
-            if not instances or obj in instances:
-                if es_conf.get_es_class(obj) is not None:
-                    to_insert.append(obj)
-        for obj in session.dirty:
-            if not session.is_modified(obj):
-                # might actually be unaltered, see docs of Session.dirty:
-                # http://docs.sqlalchemy.org/en/latest/orm/session_api.html#sqlalchemy.orm.session.Session.dirty
-                continue
-            if not instances or obj in instances:
-                if es_conf.get_es_class(obj) is not None:
-                    to_insert.append(obj)
-        for obj in session.deleted:
-            if not instances or obj in instances:
-                if es_conf.get_es_class(obj) is not None:
-                    to_delete.append(obj)
+        # new objects
+        to_insert = [obj for obj in session.new if relevant(obj)]
+        # modified objects that have actual alterations, as described in the
+        # sqlalchemy docs to Session.dirty:
+        # http://docs.sqlalchemy.org/en/latest/orm/session_api.html#sqlalchemy.orm.session.Session.dirty
+        to_insert.extend(obj for obj in session.dirty
+                         if relevant(obj) and session.is_modified(obj))
+        # deleted objects
+        to_delete = [obj for obj in session.deleted if relevant(obj)]
 
     @event.listens_for(db.Session, 'after_flush')
     def after_flush(session, flush_context):
@@ -124,9 +136,6 @@ def init(confdict, db, ctx=None):
             es_conf.insert(obj)
         for obj in to_delete:
             es_conf.delete(obj)
-    if ctx and conf['ctx.member'] not in (None, 'None'):
-        ctx.register(conf['ctx.member'], lambda ctx: CtxProxy(es_conf, ctx))
-    return es_conf
 
 
 class ConfiguredEsModule(ConfiguredModule):
