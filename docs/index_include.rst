@@ -81,7 +81,7 @@ elasticsearch's default behaviour automatically apply to all mappings:
   behaviour of elasticsearch and storing the _source fields by passing the
   appropriate :func:`init <score.es.init>` configuration.
 
-.. _store: http://www.elastic.co/guide/en/elasticsearch/reference/current/mapping-core-types.html#string
+.. _store: https://www.elastic.co/guide/en/elasticsearch/reference/1.4/mapping-source-field.html
 
 
 Conversion
