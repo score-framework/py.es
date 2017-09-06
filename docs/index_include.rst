@@ -77,7 +77,9 @@ elasticsearch's default behaviour automatically apply to all mappings:
 
 - ``_source`` will be disabled, since all member values will be retrieved from
   the database. It is possible to store single members using the field property
-  store_, if necessary.
+  store_, if necessary. It is also possible to fall back to the default
+  behaviour of elasticsearch and storing the _source fields by passing the
+  appropriate :func:`init <score.es.init>` configuration.
 
 .. _store: http://www.elastic.co/guide/en/elasticsearch/reference/current/mapping-core-types.html#string
 

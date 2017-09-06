@@ -38,6 +38,7 @@ log = logging.getLogger(__name__)
 
 defaults = {
     'ctx.member': 'es',
+    'keep_source': False,
 }
 
 
@@ -57,6 +58,11 @@ def init(confdict, db, ctx=None):
     :confkey:`index` :confdefault:`score`
         The index to use in all operations.
 
+    :confkey:`keep_source` :confdefault:`False`
+        Whether the `_source` field should be enabled. The default is `False`,
+        since the canonical representation of all objects are to be found in the
+        score.db database and should be retrieved from there.
+
     :confkey:`ctx.member` :confdefault:`es`
         The name of the :term:`context member`, that should be registered with
         the configured :mod:`score.ctx` module (if there is one). The default
@@ -67,7 +73,7 @@ def init(confdict, db, ctx=None):
     """
     conf = defaults.copy()
     conf.update(confdict)
-    kwargs = extract_conf(confdict, 'args.')
+    kwargs = extract_conf(conf, 'args.')
     if 'hosts' in kwargs:
         kwargs['hosts'] = parse_list(kwargs['hosts'])
     if 'verify_certs' in kwargs:
@@ -75,9 +81,10 @@ def init(confdict, db, ctx=None):
     if 'use_ssl' in kwargs:
         kwargs['use_ssl'] = parse_bool(kwargs['use_ssl'])
     es = Elasticsearch(**kwargs)
-    if 'index' not in confdict:
-        confdict['index'] = 'score'
-    es_conf = ConfiguredEsModule(db, es, confdict['index'])
+    if 'index' not in conf:
+        conf['index'] = 'score'
+    keep_source = parse_bool(conf['keep_source'])
+    es_conf = ConfiguredEsModule(db, es, conf['index'], keep_source)
     to_insert = []
     to_delete = []
 
@@ -128,10 +135,11 @@ class ConfiguredEsModule(ConfiguredModule):
     <score.init.ConfiguredModule>`.
     """
 
-    def __init__(self, db, es, index):
+    def __init__(self, db, es, index, keep_source):
         self.db = db
         self.es = es
         self.index = index
+        self.keep_source = keep_source
         self._converters = {}
 
     def insert(self, object_):
@@ -353,7 +361,8 @@ class ConfiguredEsModule(ConfiguredModule):
             key = cls.__score_db__['type_name']
             mapping = {}
             mapping[key] = {'properties': {}}
-            mapping[key]['_source'] = {'enabled': False}
+            if not self.keep_source:
+                mapping[key]['_source'] = {'enabled': False}
 
             def recurse(cls):
                 if hasattr(cls, '__score_es__'):
