@@ -4,8 +4,8 @@
 
     top-most es class
         The first class within :mod:`score.db`'s class hierarchy — as defined
-        by the classes' :ref:`__score_db__['base'] <db_config_member>` — that
-        has a class member called ``__score_es__``. 
+        by the classes' :ref:`__score_db__['base'] <sa_orm_config_member>` —
+        that has a class member called ``__score_es__``. 
 
         Example: Given the class hierarchy in the next few lines, the class
         ``X`` would be considered the top-most es class in ``Foo``'s class

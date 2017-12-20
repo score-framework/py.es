@@ -64,7 +64,7 @@ following document properties will be added automatically:
 - ``_id``: This is equal to the id of the object in the database
 - ``_type``: Equal to the name of the :term:`top-most es class`, i.e. ``text``.
   The name is the same name defined in the database as
-  :ref:`__score_db__['type_name'] <db_config_member>`
+  :ref:`__score_db__['type_name'] <sa_orm_config_member>`
 - ``class``: A value appearing multiple times, once for each class upwards in
   the class hierarchy toward the :term:`top-most es class`, i.e. ``silly_text``
   and ``text``. The names are those described for ``_type``, above.
