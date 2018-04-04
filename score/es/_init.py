@@ -42,7 +42,7 @@ defaults = {
 }
 
 
-def init(confdict, db, ctx=None):
+def init(confdict, orm, ctx=None):
     """
     Initializes this module acoording to :ref:`our module initialization
     guidelines <module_initialization>` with the following configuration keys:
@@ -61,7 +61,7 @@ def init(confdict, db, ctx=None):
     :confkey:`keep_source` :confdefault:`False`
         Whether the `_source` field should be enabled. The default is `False`,
         since the canonical representation of all objects are to be found in the
-        score.db database and should be retrieved from there.
+        score.sa.orm database and should be retrieved from there.
 
     :confkey:`ctx.member` :confdefault:`es`
         The name of the :term:`context member`, that should be registered with
@@ -84,58 +84,10 @@ def init(confdict, db, ctx=None):
     if 'index' not in conf:
         conf['index'] = 'score'
     keep_source = parse_bool(conf['keep_source'])
-    es_conf = ConfiguredEsModule(db, es, conf['index'], keep_source)
-    _register_flush_listeners(db, es_conf)
+    es_conf = ConfiguredEsModule(orm, es, conf['index'], keep_source)
     if ctx and conf['ctx.member'] not in (None, 'None'):
         ctx.register(conf['ctx.member'], lambda ctx: CtxProxy(es_conf, ctx))
     return es_conf
-
-
-def _register_flush_listeners(db, es_conf):
-    to_insert = []
-    to_delete = []
-
-    @event.listens_for(db.Session, 'before_flush')
-    def before_flush(session, flush_context, instances):
-        """
-        Stores the list of new and altered objects in ``to_insert``, and
-        deleted objects in ``to_delete``. The actual storing can only be done
-        *after* the flush operation (in ``after_flush``, below), since new
-        objects don't have an id at this point. But we cannot move the whole
-        logic into the ``after_flush``, since we might miss the optional
-        *instances* argument to this function.
-        """
-
-        def relevant(obj):
-            """
-            Checks if the given object *obj* is to be handled during this
-            database flush. The criteria are simple:
-
-            - The object must have a matching score.es configuration (i.e. a
-              :term:`top-most es class`) and
-            - it must be in the list of flushed *instances* (if the list is
-              non-empty)
-            """
-            return (es_conf.get_es_class(obj) and
-                    (not instances or obj in instances))
-
-        nonlocal to_insert, to_delete
-        # new objects
-        to_insert = [obj for obj in session.new if relevant(obj)]
-        # modified objects that have actual alterations, as described in the
-        # sqlalchemy docs to Session.dirty:
-        # http://docs.sqlalchemy.org/en/latest/orm/session_api.html#sqlalchemy.orm.session.Session.dirty
-        to_insert.extend(obj for obj in session.dirty
-                         if relevant(obj) and session.is_modified(obj))
-        # deleted objects
-        to_delete = [obj for obj in session.deleted if relevant(obj)]
-
-    @event.listens_for(db.Session, 'after_flush')
-    def after_flush(session, flush_context):
-        for obj in to_insert:
-            es_conf.insert(obj)
-        for obj in to_delete:
-            es_conf.delete(obj)
 
 
 class ConfiguredEsModule(ConfiguredModule):
@@ -144,12 +96,58 @@ class ConfiguredEsModule(ConfiguredModule):
     <score.init.ConfiguredModule>`.
     """
 
-    def __init__(self, db, es, index, keep_source):
-        self.db = db
+    def __init__(self, orm, es, index, keep_source):
+        self.orm = orm
         self.es = es
         self.index = index
         self.keep_source = keep_source
         self._converters = {}
+
+    def _finalize(self, orm):
+        to_insert = []
+        to_delete = []
+
+        @event.listens_for(orm.Session, 'before_flush')
+        def before_flush(session, flush_context, instances):
+            """
+            Stores the list of new and altered objects in ``to_insert``, and
+            deleted objects in ``to_delete``. The actual storing can only be done
+            *after* the flush operation (in ``after_flush``, below), since new
+            objects don't have an id at this point. But we cannot move the whole
+            logic into the ``after_flush``, since we might miss the optional
+            *instances* argument to this function.
+            """
+
+            def relevant(obj):
+                """
+                Checks if the given object *obj* is to be handled during this
+                database flush. The criteria are simple:
+
+                - The object must have a matching score.es configuration (i.e. a
+                  :term:`top-most es class`) and
+                - it must be in the list of flushed *instances* (if the list is
+                  non-empty)
+                """
+                return (self.get_es_class(obj) and
+                        (not instances or obj in instances))
+
+            nonlocal to_insert, to_delete
+            # new objects
+            to_insert = [obj for obj in session.new if relevant(obj)]
+            # modified objects that have actual alterations, as described in the
+            # sqlalchemy docs to Session.dirty:
+            # http://docs.sqlalchemy.org/en/latest/orm/session_api.html#sqlalchemy.orm.session.Session.dirty
+            to_insert.extend(obj for obj in session.dirty
+                             if relevant(obj) and session.is_modified(obj))
+            # deleted objects
+            to_delete = [obj for obj in session.deleted if relevant(obj)]
+
+        @event.listens_for(orm.Session, 'after_flush')
+        def after_flush(session, flush_context):
+            for obj in to_insert:
+                self.insert(obj)
+            for obj in to_delete:
+                self.delete(obj)
 
     def insert(self, object_):
         """
@@ -183,12 +181,12 @@ class ConfiguredEsModule(ConfiguredModule):
         es_cls = self.get_es_class(cls)
         bodytpl = {
             'class': [],
-            'concrete_class': cls.__score_db__['type_name'],
-            '_type': es_cls.__score_db__['type_name'],
+            'concrete_class': cls.__score_sa_orm__['type_name'],
+            '_type': es_cls.__score_sa_orm__['type_name'],
         }
         getters = {}
         while cls:
-            bodytpl['class'].append(cls.__score_db__['type_name'])
+            bodytpl['class'].append(cls.__score_sa_orm__['type_name'])
             if hasattr(cls, '__score_es__'):
                 for member in cls.__score_es__:
                     if member in bodytpl:
@@ -199,7 +197,7 @@ class ConfiguredEsModule(ConfiguredModule):
                     getters[member] = self.__mkmembergetter(member, converter)
             if cls == es_cls:
                 break
-            cls = cls.__score_db__['parent']
+            cls = cls.__score_sa_orm__['parent']
 
         def converter(object_):
             body = bodytpl.copy()
@@ -232,7 +230,7 @@ class ConfiguredEsModule(ConfiguredModule):
         try:
             self.es.delete(
                 index=self.index,
-                doc_type=es_cls.__score_db__['type_name'],
+                doc_type=es_cls.__score_sa_orm__['type_name'],
                 id=object_.id)
         except NotFoundError:
             pass
@@ -260,13 +258,13 @@ class ConfiguredEsModule(ConfiguredModule):
         doctypes = []
         doctype2class = {}
         for class_ in classes:
-            typename = self.get_es_class(class_).__score_db__['type_name']
+            typename = self.get_es_class(class_).__score_sa_orm__['type_name']
             doctype2class[typename] = class_
             doctypes.append(typename)
         kwargs = {
             'index': self.index,
             'analyze_wildcard': analyze_wildcard,
-            'fields': '_id',
+            'stored_fields': '_id',
             'doc_type': ','.join(doctypes),
             'from_': offset,
             'size': limit,
@@ -275,7 +273,7 @@ class ConfiguredEsModule(ConfiguredModule):
             kwargs['q'] = query
         else:
             kwargs['body'] = {'query': query}
-        session = getattr(ctx, self.db.ctx_member)
+        session = self.orm.get_session(ctx)
         result = self.es.search(**kwargs)
         current_class = None
         ids = []
@@ -306,10 +304,10 @@ class ConfiguredEsModule(ConfiguredModule):
         result = None
         if hasattr(cls, '__score_es__'):
             result = cls
-        while cls.__score_db__['parent']:
+        while cls.__score_sa_orm__['parent']:
             if hasattr(cls, '__score_es__'):
                 result = cls
-            cls = cls.__score_db__['parent']
+            cls = cls.__score_sa_orm__['parent']
         self._es_classes[initial_class] = result
         return result
 
@@ -328,7 +326,7 @@ class ConfiguredEsModule(ConfiguredModule):
                 return
             for c in cls.__subclasses__():
                 recurse(c)
-        recurse(self.db.Base)
+        recurse(self.orm.Base)
         return self._classes
 
     def refresh(self, ctx):
@@ -337,7 +335,7 @@ class ConfiguredEsModule(ConfiguredModule):
         might take a very long time, depending on the number of objects.
         """
         def generator():
-            session = getattr(ctx, self.db.ctx_member)
+            session = self.orm.get_session(ctx)
             for cls in self.classes():
                 start = time()
                 log.debug('indexing %s' % cls)
@@ -367,7 +365,7 @@ class ConfiguredEsModule(ConfiguredModule):
             self.destroy()
         self.es.indices.create(index=self.index, ignore=400)
         for cls in self.classes():
-            key = cls.__score_db__['type_name']
+            key = cls.__score_sa_orm__['type_name']
             mapping = {}
             mapping[key] = {'properties': {}}
             if not self.keep_source:
